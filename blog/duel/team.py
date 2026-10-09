@@ -52,3 +52,71 @@ def pregunta_4():
     ).filter(
         published_articles_count__gte=2
     ).order_by('-published_articles_count')
+
+
+def pregunta_5():
+    """
+    Obtener todos los artículos publicados anotados con el número de comentarios
+    aprobados (n_comments) y el número de etiquetas (n_tags),
+    ordenados por número de comentarios descendente.
+    Usa subconsultas para evitar el producto cartesiano.
+    """
+    from django.db.models import Subquery, OuterRef, Count, IntegerField
+
+    comments_subquery = Comment.objects.filter(
+        article=OuterRef('pk'),
+        is_approved=True
+    ).values('article').annotate(
+        count=Count('id')
+    ).values('count')
+
+    tags_subquery = Article.tags.through.objects.filter(
+        article=OuterRef('pk')
+    ).values('article').annotate(
+        count=Count('id')
+    ).values('count')
+
+    return Article.objects.filter(
+        is_published=True
+    ).annotate(
+        n_comments=Subquery(comments_subquery, output_field=IntegerField()),
+        n_tags=Subquery(tags_subquery, output_field=IntegerField())
+    ).order_by('-n_comments')
+
+
+def pregunta_6():
+    """
+    Obtener todos los autores con su perfil (si existe),
+    ordenados por nombre.
+    """
+    return Author.objects.select_related('profile').order_by('name')
+
+
+def pregunta_7():
+    """
+    Obtener los 5 artículos más recientes publicados con todos sus datos relacionados
+    precargados eficientemente: autor, perfil del autor, categoría, etiquetas
+    y comentarios aprobados.
+    """
+    return Article.objects.filter(
+        is_published=True
+    ).select_related(
+        'author', 'author__profile', 'category'
+    ).prefetch_related(
+        'tags',
+        Prefetch('comments', queryset=Comment.objects.filter(is_approved=True))
+    ).order_by('-published_at')[:5]
+
+
+def pregunta_8():
+    """
+    Obtener los autores que han publicado artículos en la categoría 'Django',
+    con el conteo de sus artículos en esa categoría,
+    ordenados por conteo descendente.
+    """
+    return Author.objects.filter(
+        articles__category__slug='django',
+        articles__is_published=True
+    ).annotate(
+        django_articles_count=Count('articles', filter=Q(articles__category__slug='django', articles__is_published=True))
+    ).distinct().order_by('-django_articles_count')
