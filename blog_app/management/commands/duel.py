@@ -1,92 +1,250 @@
+"""
+Comando de duelo ORM.
+
+Ejecuta las 8 preguntas de una fuente (`team` o `ai`), las compara contra la
+respuesta esperada (calculada de forma independiente) y reporta, por pregunta:
+
+  - el SQL de la consulta principal,
+  - el número de consultas SQL ejecutadas,
+  - el veredicto (correcta / incorrecta / error),
+  - la diferencia con lo esperado cuando falla,
+  - la marca "correcta pero cara" cuando el resultado es correcto pero usa
+    más consultas que la versión de referencia del equipo.
+
+Uso:
+    python manage.py duel                     # fuente team (por defecto)
+    python manage.py duel --source ai         # respuestas del asistente de IA (paso 6)
+    python manage.py duel --source assistant  # respuestas correctas desde cero (paso 8)
+    python manage.py duel --sql               # imprime el SQL de cada respuesta
+"""
+
 from django.core.management.base import BaseCommand
-from blog.duel.team import pregunta_1, pregunta_2, pregunta_3, pregunta_4, pregunta_5, pregunta_6, pregunta_7, pregunta_8
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
+
+from blog_app.models import Article, Author, AuthorProfile, Category
+
+
+def _get_module(source):
+    if source == 'ai':
+        from blog.duel import ai
+        return ai
+    if source == 'assistant':
+        from blog.duel import assistant
+        return assistant
+    from blog.duel import team
+    return team
+
+
+def _expected(n):
+    """Respuesta correcta, calculada de forma directa e independiente."""
+    if n == 1:
+        return sorted(
+            (a.title, a.author.name, a.category.name if a.category_id else None)
+            for a in Article.objects.filter(is_published=True)
+            .select_related('author', 'category')
+        )
+    if n == 2:
+        rows = []
+        for author in Author.objects.all():
+            count = sum(1 for art in author.articles.all() if art.is_published)
+            if count:
+                rows.append((author.name, count))
+        return sorted(rows)
+    if n == 3:
+        rows = []
+        for art in Article.objects.filter(is_published=True).prefetch_related('tags'):
+            slugs = {t.slug for t in art.tags.all()}
+            if slugs & {'orm', 'queryset'}:
+                n_comments = art.comments.filter(is_approved=True).count()
+                rows.append((art.title, tuple(sorted(t.name for t in art.tags.all())), n_comments))
+        return sorted(rows)
+    if n == 4:
+        rows = []
+        for cat in Category.objects.all():
+            count = sum(1 for art in cat.articles.all() if art.is_published)
+            if count >= 2:
+                rows.append((cat.name, count))
+        return sorted(rows)
+    if n == 5:
+        rows = []
+        for art in Article.objects.filter(is_published=True):
+            rows.append((art.title, art.comments.filter(is_approved=True).count(), art.tags.count()))
+        return sorted(rows)
+    if n == 6:
+        rows = []
+        for author in Author.objects.all():
+            rows.append((author.name, AuthorProfile.objects.filter(author=author).exists()))
+        return sorted(rows)
+    if n == 7:
+        rows = []
+        for art in (
+            Article.objects.filter(is_published=True)
+            .select_related('author', 'category')
+            .prefetch_related('tags')
+            .order_by('-published_at')[:5]
+        ):
+            rows.append((
+                art.title,
+                art.author.name,
+                art.category.name if art.category_id else None,
+                tuple(sorted(t.name for t in art.tags.all())),
+                art.comments.filter(is_approved=True).count(),
+            ))
+        return rows
+    if n == 8:
+        rows = []
+        for author in Author.objects.all():
+            count = sum(
+                1 for art in author.articles.all()
+                if art.is_published and art.category_id and art.category.slug == 'django'
+            )
+            if count:
+                rows.append((author.name, count))
+        return sorted(rows)
+    raise ValueError(n)
+
+
+def _normalize(n, result):
+    """Convierte el resultado de una pregunta a una estructura comparable."""
+    if n == 1:
+        return sorted(
+            (a.title, a.author.name, a.category.name if a.category_id else None)
+            for a in result
+        )
+    if n == 2:
+        return sorted((a.name, a.published_count) for a in result)
+    if n == 3:
+        return sorted(
+            (a.title, tuple(sorted(t.name for t in a.tags.all())), len(list(a.comments.all())))
+            for a in result
+        )
+    if n == 4:
+        return sorted((c.name, c.published_articles_count) for c in result)
+    if n == 5:
+        return sorted((a.title, a.n_comments, a.n_tags) for a in result)
+    if n == 6:
+        rows = []
+        for author in result:
+            try:
+                has_profile = author.profile is not None
+            except Exception:
+                has_profile = False
+            rows.append((author.name, has_profile))
+        return sorted(rows)
+    if n == 7:
+        return [
+            (
+                a.title,
+                a.author.name,
+                a.category.name if a.category_id else None,
+                tuple(sorted(t.name for t in a.tags.all())),
+                len(list(a.comments.all())),
+            )
+            for a in result
+        ]
+    if n == 8:
+        return sorted((a.name, a.django_articles_count) for a in result)
+    raise ValueError(n)
+
+
+def _run(module, n):
+    """Ejecuta la pregunta n capturando consultas y normalizando el resultado."""
+    try:
+        with CaptureQueriesContext(connection) as ctx:
+            result = getattr(module, 'pregunta_%d' % n)()
+            normalized = _normalize(n, result)
+        sql = ctx.captured_queries[0]['sql'] if ctx.captured_queries else '(sin consultas)'
+        return {
+            'normalized': normalized,
+            'count': len(ctx.captured_queries),
+            'sql': sql,
+            'error': None,
+        }
+    except Exception as exc:
+        return {'normalized': None, 'count': None, 'sql': None, 'error': exc}
+
+
+def _diff(expected, obtained):
+    """Primeras diferencias simétricas entre dos colecciones (con orden)."""
+    out = []
+    if isinstance(expected, list) and isinstance(obtained, list):
+        for i in range(max(len(expected), len(obtained))):
+            e = expected[i] if i < len(expected) else '<faltante>'
+            o = obtained[i] if i < len(obtained) else '<de más>'
+            if e != o:
+                out.append((i, e, o))
+            if len(out) >= 5:
+                break
+    return out
 
 
 class Command(BaseCommand):
-    help = 'Run and verify ORM duel queries'
+    help = 'Ejecuta y verifica las 8 consultas del duelo ORM.'
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--source', choices=['team', 'ai', 'assistant'], default='team',
+            help='Fuente de las respuestas (team, ai o assistant).',
+        )
+        parser.add_argument(
+            '--sql', action='store_true',
+            help='Imprime el SQL de la consulta principal de cada pregunta.',
+        )
 
     def handle(self, *args, **options):
-        self.stdout.write(self.style.NOTICE('=== DUEL: Verificando consultas ORM ===\n'))
+        source = options['source']
+        module = _get_module(source)
+        show_sql = options['sql']
 
-        # Pregunta 1
-        self.stdout.write(self.style.HTTP_INFO('Pregunta 1: Artículos publicados con autor y categoría'))
-        qs1 = pregunta_1()
-        self.stdout.write(f'  Query: {qs1.query}')
-        self.stdout.write(f'  Resultados: {qs1.count()}')
-        for art in qs1[:3]:
-            cat = art.category.name if art.category else 'Sin categoría'
-            self.stdout.write(f'    - {art.title} | Autor: {art.author.name} | Categoría: {cat}')
-        self.stdout.write('')
+        self.stdout.write(self.style.NOTICE(f'=== DUEL ORM :: fuente = {source} ===\n'))
 
-        # Pregunta 2
-        self.stdout.write(self.style.HTTP_INFO('Pregunta 2: Autores con artículos publicados y conteo'))
-        qs2 = pregunta_2()
-        self.stdout.write(f'  Query: {qs2.query}')
-        self.stdout.write(f'  Resultados: {qs2.count()}')
-        for author in qs2:
-            self.stdout.write(f'    - {author.name}: {author.published_count} artículos')
-        self.stdout.write('')
+        expected = {n: _expected(n) for n in range(1, 9)}
 
-        # Pregunta 3
-        self.stdout.write(self.style.HTTP_INFO('Pregunta 3: Artículos con etiquetas ORM/QuerySet y comentarios'))
-        qs3 = pregunta_3()
-        self.stdout.write(f'  Query: {qs3.query}')
-        self.stdout.write(f'  Resultados: {qs3.count()}')
-        for art in qs3:
-            tags = ', '.join([t.name for t in art.tags.all()])
-            comments = list(art.comments.all())
-            self.stdout.write(f'    - {art.title} | Tags: {tags} | Comentarios: {len(comments)}')
-        self.stdout.write('')
+        reference_counts = {}
+        for n in range(1, 9):
+            reference_counts[n] = _run(_get_module('team'), n)['count']
 
-        # Pregunta 4
-        self.stdout.write(self.style.HTTP_INFO('Pregunta 4: Categorías con 2+ artículos publicados'))
-        qs4 = pregunta_4()
-        self.stdout.write(f'  Query: {qs4.query}')
-        self.stdout.write(f'  Resultados: {qs4.count()}')
-        for cat in qs4:
-            self.stdout.write(f'    - {cat.name}: {cat.published_articles_count} artículos')
-        self.stdout.write('')
+        resultados = []
+        for n in range(1, 9):
+            run = _run(module, n)
+            self.stdout.write(self.style.HTTP_INFO(f'--- Pregunta {n} ---'))
 
-        self.stdout.write(self.style.SUCCESS('=== Todas las consultas ejecutadas correctamente ==='))
+            if run['error'] is not None:
+                err = run['error']
+                self.stdout.write(self.style.ERROR(
+                    f'  Veredicto: ERROR ({type(err).__name__}: {err})'
+                ))
+                self.stdout.write('  Clasificacion probable: campo inventado / consulta invalida\n')
+                resultados.append((n, 'ERROR', None, str(err)))
+                continue
 
-        # Pregunta 5
-        self.stdout.write(self.style.HTTP_INFO('Pregunta 5: Artículos con n_comments y n_tags'))
-        qs5 = pregunta_5()
-        self.stdout.write(f'  Query: {qs5.query}')
-        self.stdout.write(f'  Resultados: {qs5.count()}')
-        for art in qs5:
-            self.stdout.write(f'    - {art.title} | Comentarios: {art.n_comments} | Tags: {art.n_tags}')
-        self.stdout.write('')
+            self.stdout.write(f'  Consultas SQL: {run["count"]}')
+            if show_sql:
+                self.stdout.write(f'  SQL: {run["sql"]}')
 
-        # Pregunta 6
-        self.stdout.write(self.style.HTTP_INFO('Pregunta 6: Autores con perfil'))
-        qs6 = pregunta_6()
-        self.stdout.write(f'  Query: {qs6.query}')
-        self.stdout.write(f'  Resultados: {qs6.count()}')
-        for author in qs6:
-            profile = f" | Perfil: {author.profile.website}" if hasattr(author, 'profile') and author.profile else " | Sin perfil"
-            self.stdout.write(f'    - {author.name}{profile}')
-        self.stdout.write('')
+            if run['normalized'] == expected[n]:
+                if source != 'team' and run['count'] > reference_counts[n]:
+                    veredicto = 'CORRECTA (pero costosa)'
+                    self.stdout.write(self.style.WARNING(
+                        f'  Veredicto: {veredicto} '
+                        f'({run["count"]} consultas vs {reference_counts[n]} de la referencia)'
+                    ))
+                else:
+                    veredicto = 'CORRECTA'
+                    self.stdout.write(self.style.SUCCESS(f'  Veredicto: {veredicto}'))
+                resultados.append((n, veredicto, run['count'], None))
+            else:
+                veredicto = 'INCORRECTA'
+                self.stdout.write(self.style.ERROR(f'  Veredicto: {veredicto}'))
+                self.stdout.write(f'  Esperado ({len(expected[n])}): {expected[n][:5]}')
+                self.stdout.write(f'  Obtenido ({len(run["normalized"])}): {run["normalized"][:5]}')
+                for i, e, o in _diff(expected[n], run['normalized']):
+                    self.stdout.write(f'    pos {i}: esperado={e!r}  obtenido={o!r}')
+                resultados.append((n, veredicto, run['count'], _diff(expected[n], run['normalized'])))
+            self.stdout.write('')
 
-        # Pregunta 7
-        self.stdout.write(self.style.HTTP_INFO('Pregunta 7: 5 artículos recientes con todos los datos'))
-        qs7 = pregunta_7()
-        self.stdout.write(f'  Query: {qs7.query}')
-        self.stdout.write(f'  Resultados: {qs7.count()}')
-        for art in qs7:
-            tags = ', '.join([t.name for t in art.tags.all()])
-            comments = list(art.comments.all())
-            profile = art.author.profile.website if hasattr(art.author, 'profile') and art.author.profile else 'Sin perfil'
-            self.stdout.write(f'    - {art.title} | Autor: {art.author.name} ({profile}) | Cat: {art.category.name if art.category else "N/A"} | Tags: {tags} | Comentarios: {len(comments)}')
-        self.stdout.write('')
-
-        # Pregunta 8
-        self.stdout.write(self.style.HTTP_INFO('Pregunta 8: Autores con artículos en categoría Django'))
-        qs8 = pregunta_8()
-        self.stdout.write(f'  Query: {qs8.query}')
-        self.stdout.write(f'  Resultados: {qs8.count()}')
-        for author in qs8:
-            self.stdout.write(f'    - {author.name}: {author.django_articles_count} artículos en Django')
-        self.stdout.write('')
-
-        self.stdout.write(self.style.SUCCESS('=== Todas las 8 consultas ejecutadas correctamente ==='))
+        correctas = sum(1 for _, v, _, _ in resultados if v.startswith('CORRECTA'))
+        self.stdout.write(self.style.NOTICE(
+            f'=== Resumen fuente={source}: {correctas}/8 correctas ==='
+        ))
