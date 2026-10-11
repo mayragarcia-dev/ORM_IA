@@ -59,38 +59,80 @@ Resultado: **8/8 correctas**.
 ninguno de los cinco tipos de fallo del paso 6: significado (Q3), borde (Q4),
 conteos multiplicados (Q5), campo inventado (Q8) y coste (Q1/Q7).
 
-## Paso 9 — Prueba que falla (23 consultas vs 2 esperadas)
+## Paso 9 — Prueba que falla: de rojo a verde (23 consultas vs 2 esperadas)
+
+Para medir el estado **rojo** se revirtió `blog/queries.py` a la versión sin
+optimizar (N+1):
+
+```python
+def front_page_context():
+    articles = Article.objects.filter(is_published=True).order_by('-published_at')
+    return {'articles': articles,
+            'total': Article.objects.filter(is_published=True).count()}
+```
 
 Comando: `python manage.py test blog.tests.test_front_page -v 2`
 
 ```
-FAIL: test_front_page_usa_dos_consultas
-blog.tests.test_front_page.FrontPageQueryCountTest.test_front_page_usa_dos_consultas
+test_front_page_usa_dos_consultas (blog.tests.test_front_page.FrontPageQueryCountTest.test_front_page_usa_dos_consultas) ... FAIL
+
+======================================================================
+FAIL: test_front_page_usa_dos_consultas (blog.tests.test_front_page.FrontPageQueryCountTest.test_front_page_usa_dos_consultas)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "blog/tests/test_front_page.py", line 36, in test_front_page_usa_dos_consultas
+  File "/home/meli_dev/Documentos/Carpetas_cuarto_ciclo/Aplicaciones_empresariales/Lab07/ORM_IA/blog/tests/test_front_page.py", line 38, in test_front_page_usa_dos_consultas
     with self.assertNumQueries(2):
+         ~~~~~~~~~~~~~~~~~~~~~^^^
 AssertionError: 23 != 2 : 23 queries executed, 2 expected
 Captured queries were:
- 1. SELECT COUNT(*) AS "__count" FROM "blog_app_article" WHERE "is_published" = 1
- 2. SELECT ... FROM "blog_app_article" WHERE "is_published" = 1 ORDER BY "published_at" DESC
- 3. SELECT ... FROM "blog_app_author" WHERE "id" = 2
- 4. SELECT ... FROM "blog_app_category" WHERE "id" = 2
- 5. SELECT ... FROM "blog_app_tag" INNER JOIN "blog_app_article_tags" WHERE "article_id" = 6
- 6. SELECT ... FROM "blog_app_author" WHERE "id" = 5
- 7. SELECT ... FROM "blog_app_category" WHERE "id" = 1
- 8. SELECT ... FROM "blog_app_tag" ... WHERE "article_id" = 7
- ... (se repite el patrón autor/categoría/etiquetas para los 7 artículos publicados)
-23. SELECT ... FROM "blog_app_tag" ... WHERE "article_id" = 1
+1. SELECT COUNT(*) AS "__count" FROM "blog_app_article" WHERE "blog_app_article"."is_published" = 1
+2. SELECT "blog_app_article"."id", "blog_app_article"."title", "blog_app_article"."slug", "blog_app_article"."content", "blog_app_article"."author_id", "blog_app_article"."category_id", "blog_app_article"."published_at", "blog_app_article"."updated_at", "blog_app_article"."is_published" FROM "blog_app_article" WHERE "blog_app_article"."is_published" = 1 ORDER BY "blog_app_article"."published_at" DESC
+3. SELECT "blog_app_author"."id", "blog_app_author"."name", "blog_app_author"."email", "blog_app_author"."bio", "blog_app_author"."created_at" FROM "blog_app_author" WHERE "blog_app_author"."id" = 3 LIMIT 21
+4. SELECT "blog_app_category"."id", "blog_app_category"."name", "blog_app_category"."slug", "blog_app_category"."description", "blog_app_category"."created_at" FROM "blog_app_category" WHERE "blog_app_category"."id" = 4 LIMIT 21
+5. SELECT "blog_app_tag"."id", "blog_app_tag"."name", "blog_app_tag"."slug", "blog_app_tag"."created_at" FROM "blog_app_tag" INNER JOIN "blog_app_article_tags" ON ("blog_app_tag"."id" = "blog_app_article_tags"."tag_id") WHERE "blog_app_article_tags"."article_id" = 8 ORDER BY "blog_app_tag"."name" ASC
+6. SELECT "blog_app_author"."id", "blog_app_author"."name", "blog_app_author"."email", "blog_app_author"."bio", "blog_app_author"."created_at" FROM "blog_app_author" WHERE "blog_app_author"."id" = 5 LIMIT 21
+7. SELECT "blog_app_category"."id", "blog_app_category"."name", "blog_app_category"."slug", "blog_app_category"."description", "blog_app_category"."created_at" FROM "blog_app_category" WHERE "blog_app_category"."id" = 1 LIMIT 21
+8. SELECT "blog_app_tag"."id", "blog_app_tag"."name", "blog_app_tag"."slug", "blog_app_tag"."created_at" FROM "blog_app_tag" INNER JOIN "blog_app_article_tags" ON ("blog_app_tag"."id" = "blog_app_article_tags"."tag_id") WHERE "blog_app_article_tags"."article_id" = 7 ORDER BY "blog_app_tag"."name" ASC
+9. SELECT "blog_app_author"."id", "blog_app_author"."name", "blog_app_author"."email", "blog_app_author"."bio", "blog_app_author"."created_at" FROM "blog_app_author" WHERE "blog_app_author"."id" = 2 LIMIT 21
+10. SELECT "blog_app_category"."id", "blog_app_category"."name", "blog_app_category"."slug", "blog_app_category"."description", "blog_app_category"."created_at" FROM "blog_app_category" WHERE "blog_app_category"."id" = 2 LIMIT 21
+11. SELECT "blog_app_tag"."id", "blog_app_tag"."name", "blog_app_tag"."slug", "blog_app_tag"."created_at" FROM "blog_app_tag" INNER JOIN "blog_app_article_tags" ON ("blog_app_tag"."id" = "blog_app_article_tags"."tag_id") WHERE "blog_app_article_tags"."article_id" = 6 ORDER BY "blog_app_tag"."name" ASC
+12. SELECT "blog_app_author"."id", "blog_app_author"."name", "blog_app_author"."email", "blog_app_author"."bio", "blog_app_author"."created_at" FROM "blog_app_author" WHERE "blog_app_author"."id" = 3 LIMIT 21
+13. SELECT "blog_app_category"."id", "blog_app_category"."name", "blog_app_category"."slug", "blog_app_category"."description", "blog_app_category"."created_at" FROM "blog_app_category" WHERE "blog_app_category"."id" = 1 LIMIT 21
+14. SELECT "blog_app_tag"."id", "blog_app_tag"."name", "blog_app_tag"."slug", "blog_app_tag"."created_at" FROM "blog_app_tag" INNER JOIN "blog_app_article_tags" ON ("blog_app_tag"."id" = "blog_app_article_tags"."tag_id") WHERE "blog_app_article_tags"."article_id" = 4 ORDER BY "blog_app_tag"."name" ASC
+15. SELECT "blog_app_author"."id", "blog_app_author"."name", "blog_app_author"."email", "blog_app_author"."bio", "blog_app_author"."created_at" FROM "blog_app_author" WHERE "blog_app_author"."id" = 1 LIMIT 21
+16. SELECT "blog_app_category"."id", "blog_app_category"."name", "blog_app_category"."slug", "blog_app_category"."description", "blog_app_category"."created_at" FROM "blog_app_category" WHERE "blog_app_category"."id" = 3 LIMIT 21
+17. SELECT "blog_app_tag"."id", "blog_app_tag"."name", "blog_app_tag"."slug", "blog_app_tag"."created_at" FROM "blog_app_tag" INNER JOIN "blog_app_article_tags" ON ("blog_app_tag"."id" = "blog_app_article_tags"."tag_id") WHERE "blog_app_article_tags"."article_id" = 3 ORDER BY "blog_app_tag"."name" ASC
+18. SELECT "blog_app_author"."id", "blog_app_author"."name", "blog_app_author"."email", "blog_app_author"."bio", "blog_app_author"."created_at" FROM "blog_app_author" WHERE "blog_app_author"."id" = 2 LIMIT 21
+19. SELECT "blog_app_category"."id", "blog_app_category"."name", "blog_app_category"."slug", "blog_app_category"."description", "blog_app_category"."created_at" FROM "blog_app_category" WHERE "blog_app_category"."id" = 1 LIMIT 21
+20. SELECT "blog_app_tag"."id", "blog_app_tag"."name", "blog_app_tag"."slug", "blog_app_tag"."created_at" FROM "blog_app_tag" INNER JOIN "blog_app_article_tags" ON ("blog_app_tag"."id" = "blog_app_article_tags"."tag_id") WHERE "blog_app_article_tags"."article_id" = 2 ORDER BY "blog_app_tag"."name" ASC
+21. SELECT "blog_app_author"."id", "blog_app_author"."name", "blog_app_author"."email", "blog_app_author"."bio", "blog_app_author"."created_at" FROM "blog_app_author" WHERE "blog_app_author"."id" = 1 LIMIT 21
+22. SELECT "blog_app_category"."id", "blog_app_category"."name", "blog_app_category"."slug", "blog_app_category"."description", "blog_app_category"."created_at" FROM "blog_app_category" WHERE "blog_app_category"."id" = 1 LIMIT 21
+23. SELECT "blog_app_tag"."id", "blog_app_tag"."name", "blog_app_tag"."slug", "blog_app_tag"."created_at" FROM "blog_app_tag" INNER JOIN "blog_app_article_tags" ON ("blog_app_tag"."id" = "blog_app_article_tags"."tag_id") WHERE "blog_app_article_tags"."article_id" = 1 ORDER BY "blog_app_tag"."name" ASC
+
 ----------------------------------------------------------------------
-Ran 1 test in 0.039s
+Ran 1 test in 0.032s
+
 FAILED (failures=1)
 ```
 
+La suite completa en rojo (`python manage.py test`) también falla:
+`Ran 1 test in 0.029s` / `FAILED (failures=1)`.
+
 ## Paso 10 — ¿De dónde salen las 23 consultas?
 
-`front_page_context()` sin optimizar produce consultas por cada acceso a una
-relación de cada artículo:
+Cada acceso a una relación de cada artículo dispara su propia consulta. En la
+lista anterior se ve el patrón repetido 7 veces (una terna por artículo
+publicado), por ejemplo para el artículo `article_id = 8`:
+
+| Consultas | Origen |
+|-----------|--------|
+| 1 | `COUNT(*)` del total de publicados (para `total`) |
+| 2 | `SELECT` de los 7 artículos publicados |
+| 3 | Autor del artículo 8 (`article.author` → `WHERE id = 3`) |
+| 4 | Categoría del artículo 8 (`article.category` → `WHERE id = 4`) |
+| 5 | Etiquetas del artículo 8 (`article.tags.all()` → `INNER JOIN ... article_id = 8`) |
+| 6-23 | Las mismas 3 consultas para cada uno de los otros 6 artículos (ids 7, 6, 4, 3, 2, 1) |
+| **Total** | **1 + 1 + 3 × 7 = 23** |
 
 | Origen | Consultas |
 |--------|-----------|
@@ -105,12 +147,14 @@ Es un caso clásico **N+1**: 1 consulta para la lista + 3 consultas por artícul
 (autor, categoría, etiquetas). Con `N` artículos publicados el total crece como
 `3N + 2`, por lo que cada artículo nuevo en la portada agrega 3 consultas.
 
-## Paso 11 — Optimización de `blog/queries.py`
+La captura además muestra dos detalles del problema: el ORM no cachea entre
+instancias (el autor `id = 3` se vuelve a consultar en la consulta 12 y el
+`id = 1` en la 15 y en la 21), y cada lookup trae de más un `LIMIT 21` que no
+sirve para nada en la portada.
 
-- **Antes:** 23 consultas (test falla).
-- **Después:** 2 consultas (test pasa).
+## Paso 11 — Optimización de `blog/queries.py`: de rojo a verde
 
-Cambio aplicado:
+Se restauró la versión optimizada de `blog/queries.py`:
 
 ```python
 articles = list(
@@ -126,7 +170,36 @@ return {'articles': articles, 'total': len(articles)}   # total sin COUNT extra
 - `prefetch_related('tags')`: 1 consulta adicional para todas las etiquetas.
 - `len(articles)` sobre la lista ya evaluada: evita la consulta `COUNT`.
 
-Resultado de la suite completa (`python manage.py test`): ver más abajo.
+Las 2 consultas que quedan (SQL abreviado en las columnas):
+
+```sql
+-- 1. artículos + autor + categoría en un solo ROUNDTRIP
+SELECT blog_app_article.*, blog_app_author.*, blog_app_category.*
+FROM "blog_app_article"
+INNER JOIN "blog_app_author" ON ("blog_app_article"."author_id" = "blog_app_author"."id")
+LEFT OUTER JOIN "blog_app_category" ON ("blog_app_article"."category_id" = "blog_app_category"."id")
+WHERE "blog_app_article"."is_published" = 1
+ORDER BY "blog_app_article"."published_at" DESC;
+
+-- 2. TODAS las etiquetas de los 7 artículos en una sola consulta
+SELECT ("blog_app_article_tags"."article_id") AS "_prefetch_related_val_article_id",
+       "blog_app_tag"."id", "blog_app_tag"."name", "blog_app_tag"."slug", "blog_app_tag"."created_at"
+FROM "blog_app_tag"
+INNER JOIN "blog_app_article_tags" ON ("blog_app_tag"."id" = "blog_app_article_tags"."tag_id")
+WHERE "blog_app_article_tags"."article_id" IN (72, 71, 70, 68, 67, 66, 65)
+ORDER BY "blog_app_tag"."name" ASC;
+```
+
+### Medición antes y después
+
+| Métrica | Antes (rojo, N+1) | Después (verde, optimizado) |
+|---------|-------------------|-----------------------------|
+| Consultas de `front_page_context()` | **23** | **2** (−21, −91 %) |
+| `python manage.py test blog.tests.test_front_page -v 2` | `FAILED (failures=1)` — `23 != 2`, 0.032 s | `OK` — 0.023 s |
+| `python manage.py test` (suite completa) | `Ran 1 test` — `FAILED (failures=1)`, 0.029 s | `Ran 1 test` — `OK`, 0.023 s |
+| Crecimiento con N artículos publicados | `3N + 2` (crece en cada artículo) | **2, constante** (IN con todos los ids) |
+
+Verde confirmado: la prueba de consultas pasa y la suite completa queda en `OK`.
 
 ## Paso 12 — Las cuatro intenciones del agente (Melitón)
 
