@@ -31,6 +31,9 @@ Thumbs.db
 htmlcov/
 .pytest_cache/
 
+# Agentes (planes pendientes con hash, locales)
+.agent_plans.json
+
 # Build
 dist/
 build/
