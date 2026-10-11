@@ -258,9 +258,29 @@ desactualizada (`bac803902d9c…` vs `f4f983df4fe2…`). Los planes además son 
 solo uso (se consumen al ejecutarse) y pueden descartarse con `--revoke <HASH>`.
 
 
-## Paso 15 (borrador) — Tabla de uso de IA
+## Paso 15 — Tabla de uso de IA (Melitón, con lo documentado por Mayra y Angie)
 
-| Qué se le pidió | Qué respondió | Aceptado / Rechazado | Por qué |
-|-----------------|---------------|----------------------|---------|
-| Respuestas a las 8 preguntas del duelo | `blog/duel/ai.py` (4/8 correctas) | Rechazadas las incorrectas | Fallos de borde, significado, conteos multiplicados y campo inventado |
-| Optimizar la portada | `select_related` + `prefetch_related` | Aceptado tras verificarlo con el test (23→2) | Coincide con el comportamiento medido |
+Se recopilan las interacciones registradas en `DUEL_RESULTS.md` (Mayra, pasos
+4-5), en esta misma plantilla (Angie, pasos 6-11) y en los pasos 12-14 (Melitón).
+Nada se aceptó «porque lo dijo la IA»: cada respuesta se verificó con los
+comandos del proyecto (`manage.py duel`, `manage.py test`, `manage.py agent`)
+y los fallos se clasificaron con la evidencia del propio duelo.
+
+| Paso (responsable) | Qué se le pidió a la IA | Qué respondió | Aceptado / Rechazado | Por qué (verificación) |
+|--------------------|-------------------------|---------------|----------------------|------------------------|
+| 6-7 (Mayra) | Las 8 consultas del duelo ORM | `blog/duel/ai.py`: 4/8 correctas (Q2, Q6 correctas; Q1 y Q7 correctas pero costosas; Q3, Q4, Q5 incorrectas; Q8 con error) | **Rechazadas** Q1, Q3, Q4, Q5, Q7 y Q8; **aceptadas** Q2 y Q6 | El duelo comparó contra la respuesta esperada: Q3 confundió «o» con «y» (0 filas), Q4 no filtró publicados (borde), Q5 multiplicó conteos por JOIN doble (6 y 6 en vez de 2 y 3), Q8 inventó `articles__published`, Q1/Q7 usaban 15 y 21 consultas. |
+| 8 (equipo) | Las mismas 8 consultas **desde cero**, pegando el contenido de `blog/models.py` | `blog/duel/assistant.py`: 8/8 correctas en 1-3 consultas cada una | **Aceptadas** las 8, tras `python manage.py duel --source assistant` | Verificación obligatoria: el duelo calcula las respuestas esperadas de forma independiente; además ninguna quedó «cara» frente a la referencia del equipo. |
+| 9-11 (Angie) | Cómo eliminar el N+1 de la portada (23 consultas, test fallido) | `select_related('author','category')` + `prefetch_related('tags')` y total con `len()` en vez de `COUNT` | **Aceptado** el esquema; **ajustado** el total | `python manage.py test blog.tests.test_front_page` pasó de `23 != 2` a 2 consultas exactas; el `COUNT` extra se descartó porque la lista ya está evaluada. |
+| 12 (Melitón) | Implementar el comando del agente con las 4 intenciones del README | `manage.py agent` sobre `blog/agent/registry.py`: clasificador con whitelist, lista negra y plan con hash | **Aceptado** | Las 4 intenciones dieron exactamente los veredictos esperados: `ok`, `ok`, `approval_required` y `denied`, y las variantes peligrosas (`DROP TABLE`, texto de inyección, intención desconocida) también cayeron en `denied`. |
+| 13 (Melitón) | ¿Qué mecanismos impiden que el 4º comentario del artículo 1 se ejecute como instrucción? | 5 mecanismos: el dato nunca se clasifica como intención, etiquetado `[DATO NO CONFIABLE]`, lista negra + denegación por defecto, ausencia de `eval`/`exec`/shell/SQL crudo y escrituras con aprobación humana | **Aceptado** | Evidencia: el mismo texto pegado como `--intent` dio `denied` («borrado masivo sin objetivo concreto»); en `comments_of_post` se imprime solo como dato entrecomillado. |
+| 14 (Melitón) | Cómo evitar que un comentario colado entre el plan y la aprobación salga borrado | HMAC-SHA256 sobre acción + parámetros + huella SHA-256 de los registros destino; al aprobar se recalcula y se compara con `hmac.compare_digest` | **Aceptado** | Prueba de carrera superada: tras insertar un comentario del «Intruso», `--approve` devolvió `denied` (huella `9f555127977e…` vs `250a095e49bc…`) y **no se borró nada**. |
+| 13 (Melitón) | Datos: el artículo 1 necesitaba un 4º comentario con inyección de prompt para que el paso 13 fuera reproducible | `seed_blog.py` añade 2 comentarios al artículo 1 (uno benigno y el de «Eva» con la inyección); total 11 → 13 comentarios | **Aceptado y documentado** | Sin ese dato el paso 13 no se puede ejecutar; el cambio de conteo se reflejó en la cabecera de este entregable y no altera el duelo (las respuestas esperadas se recalculan) ni el test de la portada (sigue en 2 consultas). |
+
+### Cierre
+
+- Repositorio del equipo: <https://github.com/mayragarcia-dev/ORM_IA.git>
+- Estado final verificado: `python manage.py test` → **OK** (portada en 2
+  consultas) y `python manage.py duel` → **8/8 correctas**.
+- Planes de agente pendientes: ninguno (`.agent_plans.json` es local y está en
+  `.gitignore`); los datos quedaron restaurados con `python manage.py seed_blog`
+  (5 autores, 5 perfiles, 5 categorías, 9 etiquetas, 8 artículos y 13 comentarios).
